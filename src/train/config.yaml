@@ -8,13 +8,14 @@ target_modules:
   - v_proj
   - o_proj
 
-# batch_size=2, seq=512: activations are small, no OOM, no gradient checkpointing needed
-batch_size: 2
-grad_accumulation: 16
+# MatchDataset: 12k samples (one per match), bs=8, grad_accum=4
+# → ~4,500 optimizer steps total (3 epochs) — ~4-6 hours on L4
+batch_size: 8
+grad_accumulation: 4
 lr: 2e-4
 warmup_steps: 100
 epochs: 3
-max_seq_len: 512
+max_seq_len: 1024
 
 data_dir: data/processed
 output_dir: checkpoints/qwen-cricket

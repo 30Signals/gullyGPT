@@ -71,7 +71,9 @@ def main():
     print("Building datasets...")
     train_ds, val_ds = make_datasets(cfg["data_dir"], tokenizer, cfg["max_seq_len"])
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, mlm=False, pad_to_multiple_of=8
+    )
 
     training_args = TrainingArguments(
         output_dir=cfg["output_dir"],
