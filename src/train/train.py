@@ -1,9 +1,6 @@
 """
-Phase 2: QLoRA fine-tune Qwen2.5-3B on cricket sequences.
-Uses 4-bit quantization (bitsandbytes) so the base model uses ~2GB VRAM,
-allowing larger batches without gradient checkpointing — much faster on L4.
-
-Run this on the GPU server after syncing data/processed/.
+Phase 2: LoRA fine-tune Qwen2.5-3B on cricket sequences.
+bfloat16, no gradient checkpointing, small batch — fast on L4 (23GB).
 
 Usage:
     python src/train/train.py --config src/train/config.yaml
@@ -20,12 +17,11 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
 )
-from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, TaskType
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -51,21 +47,15 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Loading model in 4-bit (QLoRA): {cfg['model']}")
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
+    print(f"Loading model (bfloat16): {cfg['model']}")
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
-        quantization_config=bnb_config,
+        dtype=torch.bfloat16,
         trust_remote_code=True,
         device_map="auto",
     )
-
-    model = prepare_model_for_kbit_training(model)
+    # Disable KV cache (not needed for training)
+    model.config.use_cache = False
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -93,15 +83,15 @@ def main():
         warmup_steps=cfg.get("warmup_steps", 100),
         lr_scheduler_type="cosine",
         bf16=True,
-        logging_steps=cfg.get("logging_steps", 50),
+        logging_steps=cfg.get("logging_steps", 20),
         eval_strategy="steps",
-        eval_steps=cfg.get("eval_steps", 500),
-        save_steps=cfg.get("save_steps", 500),
+        eval_steps=cfg.get("eval_steps", 200),
+        save_steps=cfg.get("save_steps", 200),
         save_total_limit=3,
         load_best_model_at_end=True,
         report_to="none",
         dataloader_num_workers=2,
-        optim="paged_adamw_8bit",   # memory-efficient optimizer for QLoRA
+        gradient_checkpointing=False,
     )
 
     trainer = Trainer(
