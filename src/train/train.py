@@ -1,5 +1,8 @@
 """
-Phase 2: Fine-tune Qwen2.5-3B on cricket sequences via LoRA.
+Phase 2: QLoRA fine-tune Qwen2.5-3B on cricket sequences.
+Uses 4-bit quantization (bitsandbytes) so the base model uses ~2GB VRAM,
+allowing larger batches without gradient checkpointing — much faster on L4.
+
 Run this on the GPU server after syncing data/processed/.
 
 Usage:
@@ -8,6 +11,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -16,13 +20,15 @@ import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     TrainingArguments,
     Trainer,
     DataCollatorForLanguageModeling,
 )
-from peft import LoraConfig, get_peft_model, TaskType
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
-# Allow imports from project root
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.data.dataset import make_datasets
 
@@ -45,13 +51,21 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Loading model: {cfg['model']}")
+    print(f"Loading model in 4-bit (QLoRA): {cfg['model']}")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
     model = AutoModelForCausalLM.from_pretrained(
         cfg["model"],
-        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
         trust_remote_code=True,
         device_map="auto",
     )
+
+    model = prepare_model_for_kbit_training(model)
 
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
@@ -62,8 +76,6 @@ def main():
         bias="none",
     )
     model = get_peft_model(model, lora_config)
-    model.enable_input_require_grads()
-    model.gradient_checkpointing_enable()
     model.print_trainable_parameters()
 
     print("Building datasets...")
@@ -88,7 +100,8 @@ def main():
         save_total_limit=3,
         load_best_model_at_end=True,
         report_to="none",
-        dataloader_num_workers=4,
+        dataloader_num_workers=2,
+        optim="paged_adamw_8bit",   # memory-efficient optimizer for QLoRA
     )
 
     trainer = Trainer(

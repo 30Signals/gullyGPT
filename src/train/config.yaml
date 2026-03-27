@@ -8,8 +8,8 @@ target_modules:
   - v_proj
   - o_proj
 
-batch_size: 4
-grad_accumulation: 8
+batch_size: 8
+grad_accumulation: 4
 lr: 2e-4
 warmup_steps: 100
 epochs: 3
