@@ -1,0 +1,22 @@
+model: Qwen/Qwen2.5-3B
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+
+batch_size: 8
+grad_accumulation: 4
+lr: 2e-4
+warmup_steps: 100
+epochs: 3
+max_seq_len: 2048
+
+data_dir: data/processed
+output_dir: checkpoints/qwen-cricket
+logging_steps: 50
+eval_steps: 500
+save_steps: 500
