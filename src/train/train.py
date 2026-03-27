@@ -62,6 +62,8 @@ def main():
         bias="none",
     )
     model = get_peft_model(model, lora_config)
+    model.enable_input_require_grads()
+    model.gradient_checkpointing_enable()
     model.print_trainable_parameters()
 
     print("Building datasets...")

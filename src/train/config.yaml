@@ -8,12 +8,12 @@ target_modules:
   - v_proj
   - o_proj
 
-batch_size: 8
-grad_accumulation: 4
+batch_size: 2
+grad_accumulation: 16
 lr: 2e-4
 warmup_steps: 100
 epochs: 3
-max_seq_len: 2048
+max_seq_len: 1024
 
 data_dir: data/processed
 output_dir: checkpoints/qwen-cricket
