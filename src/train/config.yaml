@@ -10,8 +10,8 @@ target_modules:
 
 # MatchDataset: 12k samples (one per match), bs=8, grad_accum=4
 # → ~4,500 optimizer steps total (3 epochs) — ~4-6 hours on L4
-batch_size: 8
-grad_accumulation: 4
+batch_size: 2
+grad_accumulation: 16
 lr: 2e-4
 warmup_steps: 100
 epochs: 3
