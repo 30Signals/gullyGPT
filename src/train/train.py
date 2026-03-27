@@ -75,7 +75,7 @@ def main():
         per_device_train_batch_size=cfg["batch_size"],
         per_device_eval_batch_size=cfg["batch_size"],
         gradient_accumulation_steps=cfg["grad_accumulation"],
-        learning_rate=cfg["lr"],
+        learning_rate=float(cfg["lr"]),
         warmup_steps=cfg.get("warmup_steps", 100),
         lr_scheduler_type="cosine",
         bf16=True,
