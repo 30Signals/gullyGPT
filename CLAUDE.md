@@ -4,32 +4,59 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-gullyGPT treats T20 cricket matches as a ball-by-ball sequence generation problem. A Qwen 3B model is fine-tuned via LoRA on structured ball sequences from Cricsheet data, then used to autoregressively simulate full matches in a 2-player Streamlit game. See `.claude/plan.md` for the full implementation plan.
+gullyGPT treats T20 cricket matches as a ball-by-ball sequence generation problem. Qwen2.5-3B is fine-tuned via LoRA on structured ball sequences from Cricsheet data, then used to autoregressively simulate full matches in a 2-player Streamlit game.
+
+## Key Commands
+
+```bash
+# Data pipeline (Phase 1) — run locally
+python src/data/filter.py                        # produces data/processed/t20_index.jsonl
+python src/data/serialize.py                     # produces train.txt / val.txt
+python src/data/serialize.py --sample 5          # preview 5 sequences
+
+# Training (Phase 2) — GPU server only
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+  nohup python src/train/train.py --config src/train/config.yaml > train.log 2>&1 &
+# Resume from checkpoint:
+python src/train/train.py --config src/train/config.yaml --resume-from checkpoints/qwen-cricket/checkpoint-500
+
+# Validate model (Phase 3)
+python src/generate/eval.py --checkpoint checkpoints/qwen-cricket --n 10
+python src/generate/eval.py --checkpoint checkpoints/qwen-cricket --n 3 --verbose
+
+# Headless simulation (single match)
+python src/generate/engine.py --checkpoint checkpoints/qwen-cricket \
+  --team1 India --team2 Pakistan --venue Wankhede --toss-winner India --toss-decision bat
+
+# Run the app (Phase 4)
+streamlit run src/app/game.py
+
+# GPU server utilities
+bash scripts/watch_training.sh       # live training monitor (polls every 30s)
+bash scripts/pull_checkpoint.sh      # scp latest checkpoint from GPU server
+```
 
 ## Architecture
 
-The project has 4 phases, each building on the last:
-
 **Phase 1 — Data Pipeline** (`src/data/`)
-- `filter.py` — scans `data/all_json/` (21k Cricsheet JSONs), keeps T20/IT20 matches, writes `data/processed/t20_index.jsonl`
-- `serialize.py` — converts each match JSON into a flat tagged string sequence (see format below), writes `data/processed/train.txt` and `val.txt`
-- `dataset.py` — HuggingFace `Dataset` wrapper that tokenizes and packs sequences into 2048-token windows for causal LM training
+- `filter.py` — scans `data/all_json/` (21k Cricsheet JSONs), keeps T20/IT20, writes `data/processed/t20_index.jsonl`
+- `serialize.py` — converts each match JSON into a flat tagged string (see format below), writes `data/processed/train.txt` and `val.txt` (90/10 split by match, not by ball)
+- `dataset.py` — `MatchDataset`: one sample per match (~12k samples), tokenized and truncated to `max_seq_len`. `__getitem__` returns only `{"input_ids": list}` — no `labels` key; `DataCollatorForLanguageModeling` handles labels
 
-**Phase 2 — Training** (`src/train/`) — runs on GPU server, not locally
-- `train.py` — LoRA fine-tune of `Qwen/Qwen2.5-3B` using HuggingFace `transformers` + `peft`
-- `config.yaml` — all hyperparams (model path, LoRA rank, batch size, epochs, output dir)
+**Phase 2 — Training** (`src/train/`) — GPU server only
+- `train.py` — loads Qwen2.5-3B in bfloat16, applies LoRA (r=16, targets q/k/v/o_proj), `gradient_checkpointing=False` (re-enabling it interacts badly with LoRA). `lr` must be cast via `float(cfg["lr"])` — YAML parses `2e-4` as a string
+- `config.yaml` — `batch_size: 2, grad_accumulation: 16` (effective batch=32). Fits in ~19GB on L4 at ~13s/step
 
-**Phase 3 — Generation Engine** (`src/generate/engine.py`)
-- `MatchEngine` class generates one ball at a time: feeds running context → model → samples until `</ball>` tag, parses result dict
-- Hard cricket rules (max 20 overs, 10 wickets, 6 legal balls/over) enforced by the engine; the model handles *what* happens
+**Phase 3 — Generation Engine** (`src/generate/`)
+- `engine.py` — `MatchEngine` maintains `_match_header` + `_ball_lines` list (rolling 60-ball context window). `generate_ball()` builds a prefix hint, stops generation at newline (not `</ball>` — that's multi-token), appends `</ball>` if missing. Engine enforces hard rules (20 overs, 10 wickets, 6 legal balls/over); model handles outcomes
+- `commentary.py` — calls `LLMRouter` with a Harsha Bhogle-style prompt, returns one sentence per ball. Reads config from `llm_router_config.json` in repo root. Silent no-op on any error
+- `llm_router.py` — vendored from `30Signals/autoresearch`. Round-robin across OpenRouter/Gemini/Groq slots with per-slot exponential backoff, powered by litellm
+- `eval.py` — generates N full matches headlessly, validates scorecards (wickets ≤ 10, overs ≤ 20, sane scores), prints aggregate stats
 
 **Phase 4 — App** (`src/app/game.py`)
-- Streamlit 2-player UI: Player 1 (batting) picks batters after wickets, Player 2 (bowling) picks bowlers after each over
-- All match state in `st.session_state`
+- Streamlit 2-player UI. Player 1 (batting) picks openers at setup and next batter after each wicket. Player 2 (bowling) picks bowler before each over. All match state in `st.session_state`. Commentary renders as an italicised blockquote after each ball
 
 ## Ball Sequence Format
-
-Every match serializes to this tagged string — this is the vocabulary the model learns:
 
 ```
 <match> format=T20 venue=Wankhede teams=MI,CSK toss=MI:bat season=2023 </match>
@@ -42,29 +69,21 @@ Every match serializes to this tagged string — this is the vocabulary the mode
 <result> winner=MI by=23runs </result>
 ```
 
-## Key Commands
+Names use underscores internally (spaces replaced); `parse_ball_str()` in `engine.py` reverses this on output.
 
-```bash
-# Run data pipeline (Phase 1)
-python src/data/filter.py
-python src/data/serialize.py
-python src/data/serialize.py --sample 5   # preview 5 sequences
+## Configuration
 
-# Training — run on GPU server after syncing data/processed/
-python src/train/train.py --config src/train/config.yaml
-
-# Run the game locally (needs checkpoint)
-streamlit run src/app/game.py
-```
+- `llm_router_config.json` — gitignored; copy from `llm_router_config.json.example` and add API keys (OpenRouter / Gemini / Groq all have free tiers)
+- `.gpu_server` — gitignored; stores SSH details for GPU server scripts
+- GPU server: `root@205.147.102.130`, key at `/home/azureuser/.ssh/id_rsa_e2e_tir`
 
 ## Data
 
-- Raw data: `data/all_json/` — 21,379 Cricsheet match JSONs (already downloaded, not committed to git)
-- T20 matches: ~13,100 of the 21,379 (61%)
-- Each T20 match serializes to ~500–700 tokens
+- Raw: `data/all_json/` — 21,379 Cricsheet JSONs (not committed)
+- Processed: `data/processed/` — 13,427 T20 matches, ~9M tokens total, ~500–700 tokens/match (not committed)
 
 ## Dependencies
 
 ```bash
-pip install transformers>=4.40 peft>=0.10 torch>=2.2 datasets accelerate streamlit tqdm
+pip install transformers>=4.40 peft>=0.10 torch>=2.2 datasets accelerate streamlit tqdm pyyaml litellm>=1.40.0
 ```
