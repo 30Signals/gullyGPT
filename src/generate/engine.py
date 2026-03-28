@@ -110,6 +110,9 @@ class MatchEngine:
     MAX_OVERS = 20
     MAX_WICKETS = 10
 
+    # Keep only the last N balls in context to avoid exceeding max_seq_len
+    CONTEXT_WINDOW_BALLS = 60
+
     def __init__(self, checkpoint: str, device: str = "auto"):
         print(f"Loading model from {checkpoint}...")
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint, trust_remote_code=True)
@@ -121,6 +124,8 @@ class MatchEngine:
         )
         self.model.eval()
         self.context = ""
+        self._match_header = ""
+        self._ball_lines: list[str] = []   # rolling window of recent ball lines
 
     def start_match(
         self,
@@ -140,15 +145,23 @@ class MatchEngine:
             f"<match> format=T20 venue={v} teams={t1},{t2} "
             f"toss={tw}:{toss_decision} season={season} pitch={pitch} </match>"
         )
-        self.context = header + "\n"
+        self._match_header = header + "\n"
+        self._ball_lines = []
+        self.context = self._match_header
         return header
 
     def start_innings(self, innings_num: int, batting_team: str) -> str:
         tag = f"inn{innings_num}"
         bt = batting_team.replace(" ", "_")
         line = f"<{tag}> batting={bt} </{tag}>"
-        self.context += line + "\n"
+        self._ball_lines.append(line)
+        self._rebuild_context()
         return line
+
+    def _rebuild_context(self):
+        """Rebuild context string keeping only the last CONTEXT_WINDOW_BALLS lines."""
+        recent = self._ball_lines[-self.CONTEXT_WINDOW_BALLS:]
+        self.context = self._match_header + "\n".join(recent) + "\n"
 
     def generate_ball(
         self,
@@ -178,23 +191,28 @@ class MatchEngine:
                 top_p=top_p,
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id,
-                eos_token_id=self.tokenizer.encode("</ball>")[-1],
+                # Stop at newline — each ball is one line in training data
+                eos_token_id=self.tokenizer.encode("\n", add_special_tokens=False)[-1],
             )
 
-        generated = self.tokenizer.decode(output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        full_ball_str = prefix + generated
+        generated = self.tokenizer.decode(
+            output[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True
+        ).strip()
+        full_ball_str = prefix + " " + generated
         if "</ball>" not in full_ball_str:
             full_ball_str += " </ball>"
 
         ball = parse_ball_str(full_ball_str)
-        if ball:
-            self.context += full_ball_str.strip() + "\n"
+        line = full_ball_str.strip()
+        self._ball_lines.append(line)
+        self._rebuild_context()
         return ball
 
     def add_result(self, winner: str, by: str) -> str:
         w = winner.replace(" ", "_")
         line = f"<result> winner={w} by={by} </result>"
-        self.context += line + "\n"
+        self._ball_lines.append(line)
+        self._rebuild_context()
         return line
 
     def simulate_innings(
