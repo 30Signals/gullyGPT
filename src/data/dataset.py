@@ -57,8 +57,9 @@ class MatchDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        ids = torch.tensor(self.samples[idx], dtype=torch.long)
-        return {"input_ids": ids, "labels": ids.clone()}
+        # Return lists — DataCollatorForLanguageModeling will pad to batch max length
+        ids = self.samples[idx]
+        return {"input_ids": ids, "labels": ids[:]}
 
 
 class CricketDataset(Dataset):
