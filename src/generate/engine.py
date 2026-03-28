@@ -269,11 +269,14 @@ class MatchEngine:
         return ball
 
     def set_innings1_result(self, runs: int, wickets: int, overs: int) -> None:
-        """Snapshot inn1 balls and pin score summary — both stay in context throughout inn2."""
-        # Snapshot full innings 1 before the rolling window discards it
+        """Snapshot inn1 balls for context window; reset ball list for inn2.
+
+        Note: do NOT inject a summary tag here — any tag format not present in
+        training data (e.g. <inn1_result>) causes the model to output zeros in inn2.
+        The last 30 balls of inn1 (pinned via _inn1_lines) already give the model
+        full death-over context for the chase.
+        """
         self._inn1_lines = list(self._ball_lines)
-        summary = f"<inn1_result> runs={runs} wickets={wickets} overs={overs} </inn1_result>"
-        self._match_header = self._match_header.rstrip("\n") + "\n" + summary + "\n"
         self._ball_lines = []   # reset: inn2 rolls fresh
         self._rebuild_context()
 
