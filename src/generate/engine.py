@@ -240,16 +240,6 @@ class MatchEngine:
         nst = non_striker.replace(" ", "_")
         prefix = f"<ball> ov={ov} bwl={bwl} bat={bat} nst={nst}"
 
-        # Add match situation so model knows scoring context
-        if score is not None:
-            prefix += f" score={score}"
-        if wickets is not None:
-            prefix += f" wkts={wickets}"
-        if target is not None:
-            balls_left = (self.MAX_OVERS - over) * 6 - ball_idx
-            needed = target - (score or 0)
-            prefix += f" need={needed} ballsleft={balls_left}"
-
         prompt = self.context + prefix
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
