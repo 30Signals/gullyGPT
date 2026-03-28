@@ -1,0 +1,37 @@
+{
+  "providers": [
+    {
+      "name": "openrouter-1",
+      "type": "openrouter",
+      "api_key": "sk-or-v1-YOUR_KEY_HERE",
+      "models": [
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "nvidia/nemotron-3-super-120b-a12b:free"
+      ]
+    },
+    {
+      "name": "gemini",
+      "type": "google",
+      "api_key": "AIzaYOUR_GEMINI_KEY_HERE",
+      "models": [
+        "gemini/gemini-2.5-flash"
+      ]
+    },
+    {
+      "name": "groq",
+      "type": "groq",
+      "api_key": "gsk_YOUR_GROQ_KEY_HERE",
+      "models": [
+        "groq/llama-3.3-70b-versatile",
+        "groq/meta-llama/llama-4-scout-17b-16e-instruct",
+        "groq/qwen/qwen3-32b"
+      ]
+    }
+  ],
+  "rotation": "round_robin",
+  "max_rounds": 500,
+  "max_tool_calls_per_round": 50,
+  "push_every_n_commits": 6,
+  "push_every_minutes": 15,
+  "verification_rounds": 3
+}

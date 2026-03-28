@@ -17,6 +17,8 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from src.generate.commentary import get_commentary
+
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -187,6 +189,8 @@ def render_scoreboard():
     if st.session_state.balls_log:
         last = st.session_state.balls_log[-1]
         st.info(f"Last ball: {last}")
+    if st.session_state.get("last_commentary"):
+        st.markdown(f"> *{st.session_state['last_commentary']}*")
 
 
 def render_pick_bowler():
@@ -230,6 +234,20 @@ def render_batting():
         if ball is None:
             st.error("Model failed to generate a valid ball. Try again.")
             return
+
+        # Commentary (async-friendly: fire and store before state mutates)
+        from src.generate.engine import InningsState as _IS
+        _state_snapshot = _IS(
+            batting_team=st.session_state.batting_first if inn == 0 else st.session_state.bowling_first,
+            bowling_team=st.session_state.bowling_first if inn == 0 else st.session_state.batting_first,
+            runs=st.session_state.runs[inn],
+            wickets=st.session_state.wickets[inn],
+            legal_balls=st.session_state.legal_balls,
+            overs_complete=st.session_state.over,
+            target=st.session_state.target,
+        )
+        commentary = get_commentary(ball, _state_snapshot, innings_num=inn + 1)
+        st.session_state["last_commentary"] = commentary
 
         # Update state
         st.session_state.runs[inn] += ball.runs

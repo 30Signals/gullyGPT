@@ -4,5 +4,6 @@ torch>=2.2
 datasets
 accelerate
 streamlit
+litellm>=1.40.0
 tqdm
 pyyaml

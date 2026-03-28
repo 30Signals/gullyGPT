@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .env
 venv/
+.gpu_server
+llm_router_config.json
