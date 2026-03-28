@@ -25,10 +25,72 @@ from src.generate.engine import MatchEngine, InningsState
 
 
 FIXTURES = [
-    dict(team1="India",      team2="Pakistan",   venue="Dubai_International", toss_winner="India",   toss_decision="bat"),
-    dict(team1="Australia",  team2="England",    venue="MCG",                 toss_winner="England", toss_decision="field"),
-    dict(team1="West_Indies",team2="South_Africa",venue="Sabina_Park",        toss_winner="West_Indies", toss_decision="bat"),
+    dict(team1="India",       team2="Pakistan",    venue="Dubai_International", toss_winner="India",      toss_decision="bat"),
+    dict(team1="Australia",   team2="England",     venue="MCG",                 toss_winner="England",    toss_decision="field"),
+    dict(team1="West Indies", team2="South Africa",venue="Sabina_Park",         toss_winner="West Indies",toss_decision="bat"),
 ]
+
+SQUADS = {
+    "India": {
+        "batters": ["Rohit Sharma", "Virat Kohli", "Shubman Gill", "Suryakumar Yadav",
+                    "Hardik Pandya", "Rishabh Pant", "Ravindra Jadeja", "Kuldeep Yadav",
+                    "Jasprit Bumrah", "Mohammed Shami", "Arshdeep Singh"],
+        "bowlers": ["Jasprit Bumrah", "Mohammed Shami", "Arshdeep Singh",
+                    "Hardik Pandya", "Ravindra Jadeja", "Kuldeep Yadav"],
+    },
+    "Pakistan": {
+        "batters": ["Babar Azam", "Mohammad Rizwan", "Fakhar Zaman", "Iftikhar Ahmed",
+                    "Shadab Khan", "Asif Ali", "Mohammad Nawaz", "Shaheen Afridi",
+                    "Naseem Shah", "Haris Rauf", "Saim Ayub"],
+        "bowlers": ["Shaheen Afridi", "Naseem Shah", "Haris Rauf",
+                    "Shadab Khan", "Mohammad Nawaz", "Iftikhar Ahmed"],
+    },
+    "Australia": {
+        "batters": ["David Warner", "Travis Head", "Steve Smith", "Glenn Maxwell",
+                    "Mitchell Marsh", "Tim David", "Marcus Stoinis", "Pat Cummins",
+                    "Mitchell Starc", "Josh Hazlewood", "Adam Zampa"],
+        "bowlers": ["Pat Cummins", "Mitchell Starc", "Josh Hazlewood",
+                    "Adam Zampa", "Glenn Maxwell", "Marcus Stoinis"],
+    },
+    "England": {
+        "batters": ["Jos Buttler", "Jonny Bairstow", "Jason Roy", "Ben Stokes",
+                    "Liam Livingstone", "Moeen Ali", "Sam Curran", "Chris Woakes",
+                    "Jofra Archer", "Adil Rashid", "Mark Wood"],
+        "bowlers": ["Jofra Archer", "Mark Wood", "Chris Woakes",
+                    "Sam Curran", "Adil Rashid", "Moeen Ali"],
+    },
+    "West Indies": {
+        "batters": ["Nicholas Pooran", "Rovman Powell", "Brandon King", "Shimron Hetmyer",
+                    "Andre Russell", "Kieron Pollard", "Kyle Mayers", "Sunil Narine",
+                    "Jason Holder", "Alzarri Joseph", "Akeal Hosein"],
+        "bowlers": ["Alzarri Joseph", "Jason Holder", "Andre Russell",
+                    "Sunil Narine", "Akeal Hosein", "Kieron Pollard"],
+    },
+    "South Africa": {
+        "batters": ["Quinton de Kock", "Temba Bavuma", "Rassie van der Dussen", "David Miller",
+                    "Heinrich Klaasen", "Aiden Markram", "Marco Jansen", "Wayne Parnell",
+                    "Kagiso Rabada", "Anrich Nortje", "Tabraiz Shamsi"],
+        "bowlers": ["Kagiso Rabada", "Anrich Nortje", "Marco Jansen",
+                    "Wayne Parnell", "Tabraiz Shamsi", "Aiden Markram"],
+    },
+}
+
+
+def make_squad_callbacks(batting_team: str, bowling_team: str):
+    """Return (get_bowler, get_next_batter) callbacks using real player names."""
+    bowlers = SQUADS.get(bowling_team, {}).get("bowlers", ["Bowler1"])
+    batters = SQUADS.get(batting_team, {}).get("batters", [])
+    batter_queue = list(batters[2:])  # openers handled by engine init
+
+    def get_bowler(over, state):
+        return bowlers[over % len(bowlers)]
+
+    def get_next_batter(state):
+        if batter_queue:
+            return batter_queue.pop(0)
+        return f"Batter{state.wickets + 2}"
+
+    return get_bowler, get_next_batter
 
 
 @dataclass
@@ -88,38 +150,65 @@ def run_eval(checkpoint: str, n: int, verbose: bool = False, seed_fixture_idx: i
             if verbose:
                 print(f"  {ball}")
 
-        def on_over_end(over, state):
-            print(f"  Over {over+1}: {state.runs}/{state.wickets}")
+        def make_over_callback(batting_team):
+            prev = {"runs": 0}
+            def on_over_end(over, state):
+                this_over = state.runs - prev["runs"]
+                prev["runs"] = state.runs
+                print(f"  [{batting_team}] Over {over+1}: {state.runs}/{state.wickets}  (+{this_over} runs)")
+            return on_over_end
+
+        # Determine batting/bowling order based on toss
+        if fix["toss_decision"] == "bat":
+            batting1, bowling1 = t1, t2
+        else:
+            batting1, bowling1 = t2, t1
+        batting2, bowling2 = bowling1, batting1
+
+        sq1_bat = SQUADS.get(batting1, {}).get("batters", ["Batter1", "Batter2"])
+        sq2_bat = SQUADS.get(batting2, {}).get("batters", ["Batter1", "Batter2"])
+
+        get_bowler1, get_next_batter1 = make_squad_callbacks(batting1, bowling1)
+        get_bowler2, get_next_batter2 = make_squad_callbacks(batting2, bowling2)
 
         # Innings 1
         inn1: InningsState = engine.simulate_innings(
-            1, t1, t2,
+            1, batting1, bowling1,
             on_ball=on_ball if verbose else None,
-            on_over_end=on_over_end,
+            on_over_end=make_over_callback(batting1),
+            get_bowler=get_bowler1,
+            get_next_batter=get_next_batter1,
+            openers=sq1_bat[:2],
         )
         result.inn1_runs = inn1.runs
         result.inn1_wickets = inn1.wickets
         result.inn1_overs = inn1.overs_complete
         result.parse_errors += sum(1 for b in inn1.balls if b is None)
 
-        print(f"\n  {t1}: {inn1.runs}/{inn1.wickets} in {inn1.overs_complete} overs")
+        print(f"\n  {batting1}: {inn1.runs}/{inn1.wickets} in {inn1.overs_complete} overs")
+
+        # Pin inn1 result into context so model knows the target throughout inn2
+        engine.set_innings1_result(inn1.runs, inn1.wickets, inn1.overs_complete)
 
         # Innings 2
         target = inn1.runs + 1
         print(f"\n  Target: {target}")
 
         inn2: InningsState = engine.simulate_innings(
-            2, t2, t1,
+            2, batting2, bowling2,
             target=target,
             on_ball=on_ball if verbose else None,
-            on_over_end=on_over_end,
+            on_over_end=make_over_callback(batting2),
+            get_bowler=get_bowler2,
+            get_next_batter=get_next_batter2,
+            openers=sq2_bat[:2],
         )
         result.inn2_runs = inn2.runs
         result.inn2_wickets = inn2.wickets
         result.inn2_overs = inn2.overs_complete
         result.parse_errors += sum(1 for b in inn2.balls if b is None)
 
-        print(f"\n  {t2}: {inn2.runs}/{inn2.wickets} in {inn2.overs_complete} overs")
+        print(f"\n  {batting2}: {inn2.runs}/{inn2.wickets} in {inn2.overs_complete} overs")
 
         if inn2.runs >= target:
             result.winner = t2

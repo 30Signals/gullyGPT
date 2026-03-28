@@ -126,6 +126,7 @@ class MatchEngine:
         self.context = ""
         self._match_header = ""
         self._ball_lines: list[str] = []   # rolling window of recent ball lines
+        self._inn1_lines: list[str] = []   # full innings 1, pinned for inn2 context
 
     def start_match(
         self,
@@ -147,6 +148,7 @@ class MatchEngine:
         )
         self._match_header = header + "\n"
         self._ball_lines = []
+        self._inn1_lines = []
         self.context = self._match_header
         return header
 
@@ -159,9 +161,64 @@ class MatchEngine:
         return line
 
     def _rebuild_context(self):
-        """Rebuild context string keeping only the last CONTEXT_WINDOW_BALLS lines."""
-        recent = self._ball_lines[-self.CONTEXT_WINDOW_BALLS:]
-        self.context = self._match_header + "\n".join(recent) + "\n"
+        """Rebuild context: match header + pinned inn1 + rolling inn2 window.
+
+        Total budget: CONTEXT_WINDOW_BALLS lines split between the two innings.
+        Inn1 gets up to half the budget (last N balls of inn1 = death overs);
+        inn2 rolling window fills the rest.
+        """
+        inn2_window = self.CONTEXT_WINDOW_BALLS // 2          # 30 balls for inn2
+        inn1_window = self.CONTEXT_WINDOW_BALLS - inn2_window  # 30 balls for inn1
+
+        parts = [self._match_header]
+        if self._inn1_lines:
+            parts.append("\n".join(self._inn1_lines[-inn1_window:]))
+            parts.append("")   # blank line separator
+        parts.append("\n".join(self._ball_lines[-inn2_window:]))
+        self.context = "\n".join(parts) + "\n"
+
+    def _compute_temperature(
+        self,
+        over: int,
+        state,
+        target: Optional[int],
+        balls_since_wicket: int,
+    ) -> float:
+        temp = 1.0
+
+        # --- Death overs (16-20): batters swing hard ---
+        if over >= 15:
+            base_boost = 0.1 * (over - 14)    # +0.1 at ov16, +0.5 at ov20
+            # Extra aggression when wickets in hand (more to lose = swing harder)
+            wickets_in_hand = self.MAX_WICKETS - state.wickets
+            wicket_multiplier = 1.0 + (wickets_in_hand / self.MAX_WICKETS) * 0.5
+            temp += base_boost * wicket_multiplier
+
+        # --- Run pressure: slow scoring -> batters take risks ---
+        recent_legal = [b for b in state.balls[-12:] if b and b.is_legal]
+        if len(recent_legal) >= 6:
+            recent_runs = sum(b.runs for b in recent_legal)
+            if recent_runs <= 3:     # < 3 RPO last 2 overs — desperate
+                temp += 0.25
+            elif recent_runs <= 5:   # < 5 RPO — below par
+                temp += 0.10
+
+        # --- Chase pressure: required rate too high ---
+        if target:
+            needed = target - state.runs
+            balls_remaining = (self.MAX_OVERS - over) * 6 - state.legal_balls
+            if balls_remaining > 0:
+                req_rpo = needed / balls_remaining * 6
+                if req_rpo > 12:
+                    temp += 0.25
+                elif req_rpo > 9:
+                    temp += 0.10
+
+        # --- Wicket drought: boost if overdue (T20 avg ~17 balls/wicket) ---
+        if balls_since_wicket >= 20:
+            temp += 0.15 * ((balls_since_wicket - 20) // 6 + 1)
+
+        return min(temp, 1.5)
 
     def generate_ball(
         self,
@@ -172,6 +229,9 @@ class MatchEngine:
         non_striker: str,
         temperature: float = 0.8,
         top_p: float = 0.9,
+        score: Optional[int] = None,
+        wickets: Optional[int] = None,
+        target: Optional[int] = None,
     ) -> Optional[Ball]:
         # Build a hint prefix for the next ball to guide generation
         ov = f"{over}.{ball_idx + 1}"
@@ -180,13 +240,23 @@ class MatchEngine:
         nst = non_striker.replace(" ", "_")
         prefix = f"<ball> ov={ov} bwl={bwl} bat={bat} nst={nst}"
 
+        # Add match situation so model knows scoring context
+        if score is not None:
+            prefix += f" score={score}"
+        if wickets is not None:
+            prefix += f" wkts={wickets}"
+        if target is not None:
+            balls_left = (self.MAX_OVERS - over) * 6 - ball_idx
+            needed = target - (score or 0)
+            prefix += f" need={needed} ballsleft={balls_left}"
+
         prompt = self.context + prefix
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
 
         with torch.no_grad():
             output = self.model.generate(
                 **inputs,
-                max_new_tokens=40,
+                max_new_tokens=80,
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=True,
@@ -208,6 +278,15 @@ class MatchEngine:
         self._rebuild_context()
         return ball
 
+    def set_innings1_result(self, runs: int, wickets: int, overs: int) -> None:
+        """Snapshot inn1 balls and pin score summary — both stay in context throughout inn2."""
+        # Snapshot full innings 1 before the rolling window discards it
+        self._inn1_lines = list(self._ball_lines)
+        summary = f"<inn1_result> runs={runs} wickets={wickets} overs={overs} </inn1_result>"
+        self._match_header = self._match_header.rstrip("\n") + "\n" + summary + "\n"
+        self._ball_lines = []   # reset: inn2 rolls fresh
+        self._rebuild_context()
+
     def add_result(self, winner: str, by: str) -> str:
         w = winner.replace(" ", "_")
         line = f"<result> winner={w} by={by} </result>"
@@ -226,6 +305,7 @@ class MatchEngine:
         on_wicket=None,
         get_bowler=None,
         get_next_batter=None,
+        openers: Optional[list] = None,
     ) -> InningsState:
         """
         Simulate a full innings. Callbacks for interactive use:
@@ -239,8 +319,12 @@ class MatchEngine:
         state = InningsState(batting_team=batting_team, bowling_team=bowling_team)
 
         # Default squad placeholders if no callbacks
-        state.current_batters = ["Batter1", "Batter2"]
+        if openers and len(openers) >= 2:
+            state.current_batters = list(openers[:2])
+        else:
+            state.current_batters = ["Batter1", "Batter2"]
         state.current_bowler = "Bowler1"
+        balls_since_wicket = 0  # track how long since last wicket
 
         for over in range(self.MAX_OVERS):
             if state.wickets >= self.MAX_WICKETS:
@@ -253,6 +337,7 @@ class MatchEngine:
                 state.current_bowler = get_bowler(over, state)
 
             state.legal_balls = 0
+            all_balls_this_over = 0  # includes wides/noballs
 
             while state.legal_balls < 6:
                 if state.wickets >= self.MAX_WICKETS:
@@ -261,20 +346,23 @@ class MatchEngine:
                 batter = state.current_batters[0]
                 non_striker = state.current_batters[1]
 
-                # Adjust temperature under pressure
-                temp = 0.8
-                if over >= 18 or (target and target - state.runs <= 12):
-                    temp = 0.65
+                temp = self._compute_temperature(
+                    over, state, target, balls_since_wicket
+                )
 
                 ball = self.generate_ball(
                     over=over,
-                    ball_idx=state.legal_balls,
+                    ball_idx=all_balls_this_over,
                     bowler=state.current_bowler,
                     batter=batter,
                     non_striker=non_striker,
                     temperature=temp,
+                    score=state.runs,
+                    wickets=state.wickets,
+                    target=target,
                 )
 
+                all_balls_this_over += 1
                 if ball is None:
                     state.legal_balls += 1
                     continue
@@ -290,12 +378,16 @@ class MatchEngine:
 
                 if ball.is_wicket:
                     state.wickets += 1
+                    balls_since_wicket = 0
                     if on_wicket:
                         on_wicket(ball, state)
                     if get_next_batter and state.wickets < self.MAX_WICKETS:
                         state.current_batters[0] = get_next_batter(state)
                     else:
                         state.current_batters[0] = f"Batter{state.wickets + 2}"
+                else:
+                    if ball.is_legal:
+                        balls_since_wicket += 1
 
                 # Rotate strike on odd runs (simplified)
                 if ball.runs % 2 == 1:

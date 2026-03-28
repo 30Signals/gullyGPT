@@ -307,6 +307,12 @@ def _end_innings(inn: int, engine):
         st.session_state.over = 0
         st.session_state.legal_balls = 0
         st.session_state.phase = "innings_break"
+        # Pin inn1 result into model context so it knows the target in inn2
+        engine.set_innings1_result(
+            st.session_state.runs[0],
+            st.session_state.wickets[0],
+            20,
+        )
 
         # Set up innings 2 openers
         batting2_squad = st.session_state.batters[1]
