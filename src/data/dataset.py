@@ -57,9 +57,9 @@ class MatchDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        # Return lists — DataCollatorForLanguageModeling will pad to batch max length
-        ids = self.samples[idx]
-        return {"input_ids": ids, "labels": ids[:]}
+        # Return only input_ids as a list — DataCollatorForLanguageModeling
+        # handles padding and creates labels automatically (with -100 on pad tokens)
+        return {"input_ids": self.samples[idx]}
 
 
 class CricketDataset(Dataset):
@@ -93,8 +93,7 @@ class CricketDataset(Dataset):
         return len(self.chunks)
 
     def __getitem__(self, idx):
-        ids = torch.tensor(self.chunks[idx], dtype=torch.long)
-        return {"input_ids": ids, "labels": ids.clone()}
+        return {"input_ids": self.chunks[idx]}
 
 
 def make_datasets(
