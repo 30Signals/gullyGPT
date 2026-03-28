@@ -73,9 +73,9 @@ Names use underscores internally (spaces replaced); `parse_ball_str()` in `engin
 
 ## Configuration
 
-- `llm_router_config.json` — gitignored; copy from `llm_router_config.json.example` and add API keys (OpenRouter / Gemini / Groq all have free tiers)
-- `.gpu_server` — gitignored; stores SSH details for GPU server scripts
-- GPU server: `root@205.147.102.130`, key at `/home/azureuser/.ssh/id_rsa_e2e_tir`
+- `.env` — gitignored; copy from `.env.example` and fill in values. Holds GPU server connection details (`GPU_HOST`, `GPU_KEY`, `GPU_REMOTE_DIR`) and LLM API keys (`OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, etc.)
+- `llm_router_config.json` — gitignored; copy from `llm_router_config.json.example`. Uses `${ENV_VAR}` placeholders that are expanded from `.env` at runtime by `commentary.py`
+- `.gpu_server` — legacy, superseded by `.env`
 
 ## Data
 
