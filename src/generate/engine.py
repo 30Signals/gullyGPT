@@ -379,8 +379,8 @@ class MatchEngine:
                     if ball.is_legal:
                         balls_since_wicket += 1
 
-                # Rotate strike on odd runs (simplified)
-                if ball.runs % 2 == 1:
+                # Rotate strike on odd runs (wides don't rotate — penalty run, batter stays)
+                if ball.runs % 2 == 1 and ball.extras != "wide":
                     state.current_batters.reverse()
 
                 if target and state.runs >= target:
